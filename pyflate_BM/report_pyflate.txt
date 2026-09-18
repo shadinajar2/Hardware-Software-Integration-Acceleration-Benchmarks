@@ -1,0 +1,41 @@
+Shadi Najar - 213557143
+Basel Qassem - 324937036
+Hardware/Software Integration & Acceleration Benchmarks
+
+================================================================================
+report_pyflate.txt
+================================================================================
+
+OVERVIEW
+* The pyflate benchmark tests a standalone, pure-Python DEFLATE (gzip) and bzip2 decoder/decompressor. 
+* The primary targeted workload executes the Bzip2 decompression pathway, which is bottlenecked by bit-level manipulation, Burrows-Wheeler Transform (BWT) reversals, and Huffman prefix decoding. 
+* Data structures heavily utilize Python lists and byte arrays to organize data bit-by-bit.
+
+INITIAL ANALYSIS
+* Baseline execution logged a mean time of 3.16 seconds, recording approximately 296.7 billion cpu-clock events.
+* The profiler revealed immense overhead in the move_to_front function caused by O(N) list-slicing operations.
+* The bwt_transform routine initiated a costly full-array sort (O(N log N) space/time) and executed 256 repeated .find() scans per block.
+* Output assembly suffered from dynamic list resizing and high object allocation.
+* The find_next_symbol loop performed a highly inefficient linear scan over a 288-item dynamic Huffman table for every individual decoded symbol.
+
+OPTIMIZATIONS
+* In-Place move_to_front: Replaced memory-heavy list slicing concatenations (l[:] = l[c:c+1] + l[0:c] + l[c+1:]) with an in-place l.insert(0, l.pop(c)) method, stopping Python from allocating millions of temporary list objects.
+* Counting-Sort bwt_transform: Eliminated the native bytes(sorted(L)) constraint and .find() sweeps, implementing a single-pass O(N) counting sort (histogram) to process the character vectors.
+* Pre-allocated bwt_reverse: Defined a fixed-size bytearray for the accumulator buffer, removing the vast memory overhead incurred by continuously resizing and appending standard Python lists.
+
+PERFORMANCE COMPARISON
+* The algorithmic refactoring reduced the execution workload to roughly 237.0 billion CPU events.
+* Mean execution time dropped from 3.16 seconds down to 2.75 seconds, safely exceeding project targets by achieving a ~13% total performance speedup.
+
+HARDWARE ACCELERATION PROPOSAL
+* Hardware Description: A Huffman Variable-Length Decoder (VLD) Content Addressable Memory (CAM) module designed in SystemVerilog.
+* Hardware Architecture: The CAM resolves variable-length prefix codes simultaneously. The pipeline features a 288-entry Configuration SRAM/Register File, Dynamic Masking Logic to shift target bit-lengths, and a Combinational Parallel Match Array featuring 288 equality comparators feeding into a large OR-reduction network.
+* Inputs and Outputs: Hardware inputs encompass a clock, active-low reset, a 4-signal configuration bus (config_we, config_sym_addr, config_code, config_len), and a 16-bit bitstream_peek query interface. Outputs include a 1-bit match_valid flag, a 9-bit decoded match_symbol, and the 5-bit match_len detailing consumed bits.
+* Hardware/Software Interface: Maps directly onto the host System Bus (APB/AXI-Lite) as a MMIO module. The populate_huffman_symbols Python logic is replaced with a C-Extension driver that performs 32-bit MMIO writes to program the internal tables. The software streams 16-bit chunks and captures the returned match_len to safely advance the stream pointer.
+* Performance/Area/Power Trade-offs: The O(1) lookup guarantees a 1-cycle decode that replaces up to 15 loop iterations per symbol, drastically improving decompression times. However, this demands high standard-cell area to physically implement 288 parallel 16-bit comparators and variable shifters. High toggling rates across the parallel array generate elevated dynamic power consumption, and the wide 288-to-1 output multiplexer creates deep combinational logic that may require pipeline registers to meet closure constraints at >1 GHz.
+
+
+CONCLUSION
+Targeting list mutations and the Burrows-Wheeler Transform algorithm effectively cured memory allocation fatigue, accelerating decompression speeds by ~13%.
+The remaining overhead—linear prefix decoding—is highly unsuited for software. 
+Implementing the proposed VLD CAM module will entirely parallelize the sequential search bottleneck, yielding an instant O(1) hardware resolution matrix for optimal system throughput.

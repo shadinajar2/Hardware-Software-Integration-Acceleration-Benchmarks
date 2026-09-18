@@ -1,0 +1,40 @@
+Shadi Najar - 213557143
+Basel Qassem - 324937036
+Hardware/Software Integration & Acceleration Benchmarks
+
+================================================================================
+report_raytrace.txt
+================================================================================
+
+OVERVIEW
+* The raytrace benchmark represents a pure-Python workload designed to produce 3D renders by computing light path physics. 
+* It operates as an intensely CPU-bound execution profile by relying entirely on built-in math routines rather than C-based extensions. 
+* Key data structures include object-oriented vectors such as Point, Vector, Sphere, and Surface. 
+* Execution in pure Python forces spatial coordinates (X, Y, Z) to exist as heap-allocated float objects instead of contiguous native arrays, causing substantial memory overhead across computational loops. 
+* Employed algorithms center on vector algebra (normalizations, cross products, and dot products) alongside intersection testing via ray-sphere quadratic equations.
+
+INITIAL ANALYSIS
+* Profiling was captured using Linux perf at 999 Hz. The baseline run processed roughly 193.2 billion total cpu-clock events.
+* The baseline flame graph highlighted a massive execution overhead stemming directly from object-oriented abstractions within the inner rendering loop. 
+* Primary bottlenecks included frame_dealloc.lto_priv.0 (3.07% of execution time) and _PyEval_MakeFrameVector (2.84%). This indicated the interpreter was wasting heavy CPU cycles pushing and popping execution frames for nested method calls instead of calculating float arithmetic.
+* Continuous temporary Vector class instantiations resulted in severe memory thrashing under Python's dynamic memory allocator.
+
+OPTIMIZATIONS
+* Algorithmic Inlining (Sphere.intersectionTime): The vector subtraction operation (cp = self.centre - ray.point) was rewritten to compute the x, y, and z coordinate differentials directly as localized float variables, entirely preventing the instantiation of temporary Vector objects. 
+* Method Resolution Bypass (Vector.magnitude): The internal method call math.sqrt(self.dot(self)) was fully inlined into raw math. This completely eliminated the method-lookup penalty and the overhead of pushing a new frame to the call stack.
+* Type-Check Elimination: Deterministic mustBeVector() validation checks were removed across all dot product, cross product, and subtraction routines. This eliminated millions of unnecessary validation frames from the deepest parts of the rendering loop.
+
+PERFORMANCE COMPARISON
+* Total CPU cycles were reduced from roughly 193.2 billion down to roughly 132.0 billion events, demonstrating a 31.67% reduction in execution overhead. 
+* The primary core execution phase, _PyEval_EvalFrameDefault, shifted from occupying 27.65% to 29.32% of total time. This relative increase during a significantly shorter execution window proves the CPU effectively spent more time processing rendering math rather than managing Python memory allocations.
+
+HARDWARE ACCELERATION PROPOSAL
+* Hardware Description: A custom 3D Raytrace Multiply-Accumulate (MAC) Engine designed in SystemVerilog. 
+* Hardware Architecture: The module features a 2-stage pipeline utilizing 32-bit fixed-point arithmetic (Q16.16). Stage 1 calculates three parallel partial products (aX * bX, aY * bY, aZ * bZ), while Stage 2 accumulates these partial products into a final scalar sum.
+* Inputs and Outputs: Inputs are 32-bit signed fixed-point 3D vectors; the output is a 64-bit scalar dot product.
+* Hardware/Software Interface: The MAC engine integrates as a Memory-Mapped I/O (MMIO) peripheral via an AXI4-Lite bus. The Python intersectionTime software is replaced with a custom C-Extension that translates float values to fixed-point integers and utilizes /dev/mem and mmap() to access the physical base address.
+* Performance/Area/Power Trade-offs: The 32-bit fixed-point logic requires a microscopic standard-cell footprint compared to an IEEE 754 double-precision floating-point unit (FPU), trading extreme fractional precision for massive area and power savings. Pipelining the core expands the operation to 2 clock cycles but breaks the critical path to allow much higher operating frequencies. Software must batch queries utilizing Direct Memory Access (DMA) to prevent AXI bus communication latency from overshadowing the rapid 2-cycle hardware throughput.
+* Block Diagram: Illustrated in the System Integration and Datapath Diagram .
+
+CONCLUSION
+Refactoring the pure-Python object-oriented architecture to utilize flat, inlined float variables successfully bypassed the dynamic memory allocator, yielding a ~31% overall software speedup. Integrating the proposed 2-stage fixed-point MAC engine to natively process the mathematically dense dot products will directly resolve the remaining computational bottleneck, drastically increasing execution throughput for 3D rendering.
